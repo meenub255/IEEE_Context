@@ -206,7 +206,7 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc):
 # ─────────────────────────────────────────────────────────────────────────────
 # CORE PROCESSING 
 # ─────────────────────────────────────────────────────────────────────────────
-def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY', lighting='DAY', batch_size=8, ui_callback=None):
+def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY', lighting='DAY', batch_size=8, ui_callback=None, enable_potholes=False):
     """
     End-to-End inference loop. Uses Single Frame YOLO + ResNet + Uni-GRU sliding window.
     (Note: Batch processing is disabled here because Temporal Sequences require continuous 
@@ -219,6 +219,17 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
     # Check if night weights exist, otherwise default to yolov8n
     weights_path = 'yolov8_night_highway.pt' if lighting == 'NIGHT' and os.path.exists('yolov8_night_highway.pt') else 'yolov8n.pt'
     yolo = YOLO(weights_path).to('cpu')
+    
+    # IEEE Dual-Inference Mode: Load the Secondary Pothole Network
+    yolo_pothole = None
+    if enable_potholes:
+        pothole_weights = 'runs/pothole_model/weights/best.pt'
+        if os.path.exists(pothole_weights):
+            yolo_pothole = YOLO(pothole_weights).to('cpu')
+        elif os.path.exists('yolov8_pothole.pt'): # Fallback
+            yolo_pothole = YOLO('yolov8_pothole.pt').to('cpu')
+        else:
+            log.warning("Static Scanner enabled, but pothole weights are missing!")
     
     cnn, gru = load_pytorch_models()
     
@@ -412,6 +423,24 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     if data['last_seen'] > 10: dead_ids.append(tid)
             for d in dead_ids: del active_tracks[d]
             
+            # IEEE Dual-Inference: Static Hazards (Potholes)
+            if enable_potholes and yolo_pothole is not None:
+                # We execute a separate parallel inference because structural data for potholes requires isolated non-maximum suppression
+                res_static = yolo_pothole(frame, verbose=False)[0]
+                for box in res_static.boxes:
+                    if box.conf[0].item() < 0.20: continue # De-noise false ground shapes
+                    px1, py1, px2, py2 = box.xyxy[0].cpu().numpy()
+                    
+                    # Compute Dynamic UI Scale
+                    scale = min(width, height) / 720.0
+                    f_scale = max(0.4, 0.6 * scale)
+                    t_thick = max(1, int(1.5 * scale))
+                    
+                    # Draw a distinct Ground-Mask separating it from Dynamic Vehicles
+                    cv2.rectangle(frame, (int(px1), int(py1)), (int(px2), int(py2)), (0, 120, 255), max(1, t_thick)) # Solid Orange
+                    cv2.putText(frame, "STATIC HAZARD: POTHOLE", (int(px1), max(15, int(py1)-5)),
+                                cv2.FONT_HERSHEY_SIMPLEX, f_scale * 0.7, (0, 120, 255), t_thick)
+
             # Finalize Draw
             _draw_advanced_hud(frame, weather, road_type, f_mod)
             writer.write(frame)

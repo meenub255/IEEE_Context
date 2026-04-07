@@ -135,6 +135,11 @@ with st.sidebar:
     st.markdown("### 📂 Video Input")
     uploaded_file = st.file_uploader("Browse dashcam clip", type=["mp4", "avi"])
     st.divider()
+    
+    st.markdown("### 🛠️ Neural Architecture")
+    enable_potholes = st.toggle("Enable Pothole Scanning (Static Hazards)", value=False)
+    
+    st.divider()
     st.caption("YOLOv8n · ResNet-18 · Uni-GRU")
 
 
@@ -178,7 +183,7 @@ with tab1:
             success = process_video(
                 temp_input, temp_output,
                 weather=weather, road_type=road_type, lighting=lighting,
-                ui_callback=render_frame
+                ui_callback=render_frame, enable_potholes=enable_potholes
             )
             elapsed = time.time() - t0
 
