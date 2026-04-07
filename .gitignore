@@ -1,0 +1,37 @@
+# Python virtual environments
+venv/
+env/
+.env
+
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch Neural Network Weights
+*.pt
+*.pth
+*.onnx
+runs/
+
+# Large Datasets and Video Media
+dataset/
+presentation_videos/
+*.zip
+*.tar
+*.gz
+*.mp4
+*.avi
+*.mkv
+*.csv
+
+# Streamlit Temporary Processing Files
+temp_input.mp4
+temp_output.mp4
+
+# IDE / System files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
