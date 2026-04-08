@@ -151,32 +151,29 @@ def _draw_advanced_hud(frame, weather, road_type, f_mod, w_pred=None, r_pred=Non
         y_cur += dash_len + gap_len
 
 
-def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc):
-    """Draws sleek UI bounding boxes representing neural risk predictions."""
+def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None):
+    """Draws Tesla-style FCW bounding boxes with TTC and distance annotation."""
     h, w = frame.shape[:2]
     
     x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
     box_w = max(x2 - x1, 1)
     
-    # Color mapping based on GRU Hazard Prob
+    # Tesla FCW Color Zones
     if hazard_prob > 0.75:
-        color = (0, 0, 255)       # Red - High Risk
+        color = (0, 0, 255)       # Red  — AEB / CRITICAL zone
         status = "CRITICAL"
         thick = 2
     elif hazard_prob > 0.40:
-        color = (0, 165, 255)     # Orange - Warning
+        color = (0, 165, 255)     # Orange — FCW WARNING zone
         status = "WARNING"
         thick = 2
     else:
-        color = (0, 255, 100)     # Green - Safe
+        color = (0, 220, 80)      # Green — SAFE following distance
         status = "SAFE"
         thick = 1
 
-    # Base scale on screen resolution
+    # Adaptive scale: distant vehicles get smaller labels
     res_scale = max(0.4, h / 720.0)
-    
-    # Scale text dynamically based on the width of the vehicle!
-    # Distant vehicles get smaller text, preventing massive label overlap
     box_scale = max(0.4, min(1.1, box_w / 130.0))
     b_scale = res_scale * box_scale
 
@@ -191,40 +188,32 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc):
     cv2.line(frame, (x1, y2), (x1+L, y2), color, thick)
     cv2.line(frame, (x1, y2), (x1, y2-L), color, thick)
 
-    # ── Single-Line Data Tag ──
-    # Using a highly compact format to save horizontal space and prevent overlap
-    text = f"{status} [{int(hazard_prob*100)}%] TTC:{ttc:.1f}s"
+    # Tesla-style label: STATUS | TTC | Distance
+    dist_str = f" | {dist:.0f}m" if dist is not None else ""
+    text = f"{status}  TTC:{ttc:.1f}s{dist_str}"
     
     font       = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.45 * b_scale
+    font_scale = 0.42 * b_scale
     font_thick = max(1, int(1.5 * b_scale))
 
     (txt_w, txt_h), _ = cv2.getTextSize(text, font, font_scale, font_thick)
-
     pad_h = int(6 * b_scale)
     pad_w = int(6 * b_scale)
     
     tag_x1 = x1
     tag_y1 = max(y1 - txt_h - (pad_h * 2), 0)
-    tag_x2 = tag_x1 + txt_w + (pad_w * 2)
+    tag_x2 = min(tag_x1 + txt_w + (pad_w * 2), w)
     tag_y2 = y1
 
-    # Bounds check to prevent numpy slicing errors at frame edges
-    tag_x1 = max(0, min(tag_x1, w-1))
-    tag_x2 = max(0, min(tag_x2, w))
-    tag_y1 = max(0, min(tag_y1, h-1))
-    tag_y2 = max(0, min(tag_y2, h))
+    tag_x1 = max(0, tag_x1)
+    tag_y1 = max(0, tag_y1)
+    tag_y2 = max(tag_y1 + 1, tag_y2)
 
     if tag_x2 > tag_x1 and tag_y2 > tag_y1:
         import numpy as np
-        # Glassmorphism transparent tag background (prevents blocking distant cars)
         roi = frame[tag_y1:tag_y2, tag_x1:tag_x2]
         rect_bg = np.full_like(roi, color)
-        
-        # 60% opacity for the background, 40% opacity for the original video
-        cv2.addWeighted(rect_bg, 0.60, roi, 0.40, 0, roi)
-
-        # Text color: High contrast
+        cv2.addWeighted(rect_bg, 0.65, roi, 0.35, 0, roi)
         text_color = (255, 255, 255) if status == "CRITICAL" else (0, 0, 0)
         cv2.putText(frame, text, (tag_x1 + pad_w, tag_y2 - pad_h + 1),
                     font, font_scale, text_color, font_thick)
@@ -404,69 +393,68 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
 
                 track['telemetry'].append([dist, rel_speed, f_mod])
                 
-                # 3. TEMPORAL INFERENCE (GRU)
-                # Only execute if we have a full sequence to predict correctly
-                hazard_prob = 0.0
-                ttc = 99.9
+                # ─────────────────────────────────────────────────────────────
+                # TESLA FCW (Forward Collision Warning) LOGIC
+                # ─────────────────────────────────────────────────────────────
+                # Tesla uses Speed-Adaptive TTC zones, not fixed raw distances.
+                # The faster you're closing in, the earlier the system escalates.
 
+                # Step 1: Compute TTC from GRU or fallback math
                 if len(visual_buffer) == SEQ_LEN and len(track['telemetry']) == SEQ_LEN:
-                    # Construct Tensor Payload: [Batch=1, Seq=15, Dim]
-                    v_seq = torch.stack(list(visual_buffer)).unsqueeze(0) # [1, 15, 256]
-                    t_seq = torch.tensor(list(track['telemetry']), dtype=torch.float32).unsqueeze(0) # [1, 15, 3]
-
+                    v_seq = torch.stack(list(visual_buffer)).unsqueeze(0)
+                    t_seq = torch.tensor(list(track['telemetry']), dtype=torch.float32).unsqueeze(0)
                     w_t = torch.tensor([w_code], dtype=torch.long)
                     r_t = torch.tensor([r_code], dtype=torch.long)
-                    
-                    # Forward Pass
                     h_pred, ttc_pred = gru(v_seq, t_seq, w_t, r_t)
-                    
                     hazard_prob = h_pred.item()
-                    ttc = ttc_pred.item()
-                    if ttc < 0: ttc = 99.9 # bounds check
-                    
+                    ttc = max(ttc_pred.item(), 0.1)
                 else:
-                    # Fallback math if GRU sequence isn't ready (first 15 frames warmup)
-                    if rel_speed > 0.5 and dist > 0:
+                    # Fallback: pure physics TTC
+                    if rel_speed > 0.1 and dist > 0:
                         ttc = dist / rel_speed
-                        # More conservative fallback: only WARNING if TTC < 3s, CRITICAL if TTC < 1.5s AND very close
-                        if ttc < 1.5 and dist < 10.0:
-                            hazard_prob = 0.80  # Genuinely about to collide
-                        elif ttc < 3.0:
-                            hazard_prob = 0.50  # Closing in - WARNING level
-                        else:
-                            hazard_prob = 0.20  # Following at safe distance - SAFE
-                
-                # Tesla-Standard TTC-Based Hazard Classification
-                # CRITICAL: TTC < 1.5s (imminent collision)
-                # WARNING:  TTC 1.5s - 3.0s (closing in)
-                # SAFE:     TTC > 3.0s (safe following distance)
-                if dist > 40.0:
-                    hazard_prob = min(hazard_prob, 0.25)   # Far away — force SAFE
-                elif dist > 20.0:
-                    hazard_prob = min(hazard_prob, 0.60)   # Mid-range — cap at WARNING
-                elif dist > 10.0:
-                    hazard_prob = min(hazard_prob, 0.80)   # Close — can be CRITICAL if TTC confirms
-                # < 10m: No cap — full CRITICAL allowed
-                    
-                # Hard TTC override (matches Tesla Autopilot FCW triggers)
-                if ttc > 3.0:
-                    hazard_prob = min(hazard_prob, 0.39)   # TTC safe zone — force GREEN
-                elif ttc > 1.5:
-                    hazard_prob = min(hazard_prob, 0.74)   # Warning zone — max ORANGE
-                # TTC < 1.5s: CRITICAL fully unlocked
-                    
-                # 2. Anomalous Orientation Detection (Spun-out / Horizontal Cars)
+                    else:
+                        ttc = 99.9
+                    hazard_prob = max(0.0, min(1.0 - (ttc / 6.0), 1.0))
+
+                # Step 2: Speed-Adaptive Critical TTC Threshold
+                # At high closing speeds, Tesla triggers FCW earlier
+                if rel_speed > 15.0:       # Closing at > 54 km/h
+                    critical_ttc = 2.5
+                    warning_ttc  = 4.0
+                elif rel_speed > 8.0:      # Closing at > 28 km/h
+                    critical_ttc = 2.0
+                    warning_ttc  = 3.5
+                else:                      # Normal following
+                    critical_ttc = 1.7
+                    warning_ttc  = 3.0
+
+                # Step 3: Distance Zone (absolute physical safety floor)
+                # No matter what TTC says, a car 50m away is SAFE
+                if dist > 50.0:
+                    hazard_prob = min(hazard_prob, 0.25)        # Force SAFE
+                elif dist > 25.0:
+                    hazard_prob = min(hazard_prob, 0.55)        # Max WARNING
+                elif dist > 12.0:
+                    hazard_prob = min(hazard_prob, 0.80)        # High WARNING / borderline CRITICAL
+                # dist < 12m: CRITICAL fully unlocked (car is right in front)
+
+                # Step 4: TTC Override (primary Tesla FCW decision maker)
+                if ttc > warning_ttc:
+                    hazard_prob = min(hazard_prob, 0.39)        # Safe zone — force GREEN
+                elif ttc > critical_ttc:
+                    hazard_prob = min(hazard_prob, 0.74)        # Warning zone — max ORANGE
+                else:
+                    hazard_prob = max(hazard_prob, 0.76)        # Tesla AEB zone — force CRITICAL
+
+                # Step 5: Anomalous Orientation Detection (Spun-out / Horizontal Cars)
+                # If a car is sideways, full CRITICAL regardless of distance
                 aspect_ratio = (x2 - x1) / max((y2 - y1), 1)
-                
-                # Only apply orientation logic to YOLO boxes
                 if aspect_ratio > 2.2:
-                    # If a car is horizontal, it is blocking the road (spun out or T-bone accident).
-                    # Overrule the distance decay and instantly flag as a severe threat.
                     hazard_prob = max(hazard_prob, 0.95)
-                    ttc = min(ttc, dist / 20.0) # Assume highway speed approach
-                    
-                # Draw
-                _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc)
+                    ttc = min(ttc, dist / max(rel_speed, 5.0))
+
+                # Draw the hazard box with distance annotation
+                _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist)
                 
                 # Append to frame metrics
                 frame_max_risk = max(frame_max_risk, hazard_prob)
