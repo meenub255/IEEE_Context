@@ -136,6 +136,19 @@ def _draw_advanced_hud(frame, weather, road_type, f_mod, w_pred=None, r_pred=Non
     txt_r = f"FRICTION: {f_mod:.2f}x | SPATIAL-TEMPORAL ACTIVE"
     text_size = cv2.getTextSize(txt_r, cv2.FONT_HERSHEY_DUPLEX, font_scale, 1)[0]
     cv2.putText(frame, txt_r, (w - text_size[0] - 20, y_pos), cv2.FONT_HERSHEY_DUPLEX, font_scale, (0, 255, 0), max(1, int(b_scale)))
+    
+    # Straight-View ROI Corridor Guide Lines
+    # Draw two vertical dashed lines at 20% and 80% width — the monitored lane boundary
+    roi_left  = int(w * 0.20)
+    roi_right = int(w * 0.80)
+    dash_color = (80, 80, 80)   # Subtle dark grey, barely visible
+    dash_len, gap_len = 20, 15
+    y_cur = bar_h
+    while y_cur < h:
+        y_end = min(y_cur + dash_len, h)
+        cv2.line(frame, (roi_left,  y_cur), (roi_left,  y_end), dash_color, 1)
+        cv2.line(frame, (roi_right, y_cur), (roi_right, y_end), dash_color, 1)
+        y_cur += dash_len + gap_len
 
 
 def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc):
@@ -268,9 +281,9 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
     if weather == 'SNOW' and lighting == 'NIGHT':
         current_conf_threshold = 0.08  # YOLO must aggressively hunt in blizzard bloom
     elif lighting == 'NIGHT' or weather in ['SNOW', 'FOG', 'RAIN']:
-        current_conf_threshold = 0.15
+        current_conf_threshold = 0.12
     else:
-        current_conf_threshold = 0.30
+        current_conf_threshold = 0.20  # Lowered from 0.30: catches distant cars in straight view
     
     fps    = int(cap.get(cv2.CAP_PROP_FPS)) or 30
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -329,12 +342,25 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                 # IEEE Feature: Ego-Vehicle & Environment Suppression
                 box_area = (x2 - x1) * (y2 - y1)
                 screen_area = width * height
+                box_fill_ratio = box_area / screen_area  # How much of the screen does this object fill?
                 
-                # A: Strict dashboard/hood cutoff. Any boxes strictly isolated to the bottom 25% of the frame are physical car parts.
-                if y1 > height * 0.75:
+                # A: Hood / Dashboard cutoff.
+                # ONLY suppress boxes that are ENTIRELY below 80% of frame height AND fill < 15% of screen.
+                # This ensures a close vehicle filling the frame is NEVER deleted.
+                if y1 > height * 0.80 and box_fill_ratio < 0.15:
                     continue
-                # B: Massive boxes glued to the bottom
-                if box_area > screen_area * 0.25 and y2 > height * 0.90 and y1 > height * 0.50: 
+                
+                # B: Dashboard/glare blobs at the very bottom, tiny area only
+                if y1 > height * 0.85 and box_fill_ratio < 0.05:
+                    continue
+                
+                # C: STRAIGHT-VIEW ROI CORRIDOR FILTER
+                # Only monitor the central lane directly ahead (middle 60% of frame width).
+                # Vehicles in the far-left or far-right lanes are not in our immediate path.
+                cx_check = (x1 + x2) / 2
+                roi_left  = width * 0.20   # 20% from left edge
+                roi_right = width * 0.80   # 80% from left edge (i.e. 20% from right)
+                if cx_check < roi_left or cx_check > roi_right:
                     continue
                 
                 # If a box is massive but sits in the middle of the screen (y1 < 0.5 * height), 
@@ -399,17 +425,35 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     if ttc < 0: ttc = 99.9 # bounds check
                     
                 else:
-                    # Fallback math if sequence isn't ready
-                    if rel_speed > 0.5:
+                    # Fallback math if GRU sequence isn't ready (first 15 frames warmup)
+                    if rel_speed > 0.5 and dist > 0:
                         ttc = dist / rel_speed
-                        hazard_prob = min(max((5.0 - ttc)/5.0, 0.0), 1.0) # heuristic fallback during 0.5s warmup
+                        # More conservative fallback: only WARNING if TTC < 3s, CRITICAL if TTC < 1.5s AND very close
+                        if ttc < 1.5 and dist < 10.0:
+                            hazard_prob = 0.80  # Genuinely about to collide
+                        elif ttc < 3.0:
+                            hazard_prob = 0.50  # Closing in - WARNING level
+                        else:
+                            hazard_prob = 0.20  # Following at safe distance - SAFE
                 
-                # IEEE Presentation Fix: Spatial Distance Decay & Orientation Anomalies
-                # 1. Distant cars should mathematically not be labeled CRITICAL. 
+                # Tesla-Standard TTC-Based Hazard Classification
+                # CRITICAL: TTC < 1.5s (imminent collision)
+                # WARNING:  TTC 1.5s - 3.0s (closing in)
+                # SAFE:     TTC > 3.0s (safe following distance)
                 if dist > 40.0:
-                    hazard_prob = min(hazard_prob, 0.3)  # Forces GREEN (SAFE)
+                    hazard_prob = min(hazard_prob, 0.25)   # Far away — force SAFE
                 elif dist > 20.0:
-                    hazard_prob = min(hazard_prob, 0.6)  # Forces ORANGE (WARNING)
+                    hazard_prob = min(hazard_prob, 0.60)   # Mid-range — cap at WARNING
+                elif dist > 10.0:
+                    hazard_prob = min(hazard_prob, 0.80)   # Close — can be CRITICAL if TTC confirms
+                # < 10m: No cap — full CRITICAL allowed
+                    
+                # Hard TTC override (matches Tesla Autopilot FCW triggers)
+                if ttc > 3.0:
+                    hazard_prob = min(hazard_prob, 0.39)   # TTC safe zone — force GREEN
+                elif ttc > 1.5:
+                    hazard_prob = min(hazard_prob, 0.74)   # Warning zone — max ORANGE
+                # TTC < 1.5s: CRITICAL fully unlocked
                     
                 # 2. Anomalous Orientation Detection (Spun-out / Horizontal Cars)
                 aspect_ratio = (x2 - x1) / max((y2 - y1), 1)
