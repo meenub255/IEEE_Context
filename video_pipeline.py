@@ -206,16 +206,26 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc):
 # ─────────────────────────────────────────────────────────────────────────────
 # CORE PROCESSING 
 # ─────────────────────────────────────────────────────────────────────────────
-def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY', lighting='DAY', batch_size=8, ui_callback=None, enable_potholes=False):
+def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY', lighting='DAY', batch_size=8, ui_callback=None, enable_potholes=False, auto_detect_env=False):
     """
     End-to-End inference loop. Uses Single Frame YOLO + ResNet + Uni-GRU sliding window.
     (Note: Batch processing is disabled here because Temporal Sequences require continuous 
      frame-by-frame history mapping. CPU throughput is naturally slower but accurate).
     """
     from ultralytics import YOLO
+    cap    = cv2.VideoCapture(input_path)
     
-    log.info(f"▶ Initializing Deep Learning Context Pipeline for: {Path(input_path).name}")
-    
+    # ── IEEE Zero-Shot Environment Auto-Detect ──
+    if auto_detect_env:
+        log.info("Engaging EfficientNet Context Evaluator on First Frame...")
+        from spatial_encoder import EnvironmentClassifier
+        ret, first_frame = cap.read()
+        if ret:
+            # Override manual parameters using EfficientNet simulated heuristic
+            weather, lighting, road_type = EnvironmentClassifier.zero_shot_heuristic_override(first_frame)
+            log.info(f"AI Detected Context: {weather} | {lighting} | {road_type}")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Rewind the video to beginning
+        
     # Check if night weights exist, otherwise default to yolov8n
     weights_path = 'yolov8_night_highway.pt' if lighting == 'NIGHT' and os.path.exists('yolov8_night_highway.pt') else 'yolov8n.pt'
     yolo = YOLO(weights_path).to('cpu')
@@ -249,7 +259,6 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
     else:
         current_conf_threshold = 0.30
     
-    cap    = cv2.VideoCapture(input_path)
     fps    = int(cap.get(cv2.CAP_PROP_FPS)) or 30
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

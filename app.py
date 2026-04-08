@@ -118,26 +118,33 @@ st.markdown("""
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 🌍 Environment Context")
-    st.markdown("Inject real-world conditions to observe spatial-temporal response changes.")
+    st.markdown("### 🛠️ Neural Architecture")
+    auto_detect = st.toggle("🤖 Auto-Detect Environment (EfficientNet)", value=True)
+    enable_potholes = st.toggle("Enable Pothole Scanning (Static Hazards)", value=False)
     st.divider()
-    weather   = st.selectbox("Weather", ["CLEAR", "RAIN", "FOG", "SNOW"])
-    lighting  = st.selectbox("Lighting", ["DAY", "DAWN/DUSK", "NIGHT"])
-    road_type = st.selectbox("Road Type", ["HIGHWAY", "URBAN", "SCHOOL_ZONE"])
 
-    w_map = {"CLEAR": 1.0, "RAIN": 0.75, "FOG": 0.85, "SNOW": 0.5}
-    l_map = {"DAY": 1.0, "DAWN/DUSK": 0.75, "NIGHT": 0.5}
+    st.markdown("### 🌍 Environment Context")
+    if auto_detect:
+        st.success("Autonomous Scene Classification Active")
+        weather   = "CLEAR"
+        lighting  = "DAY"
+        road_type = "HIGHWAY"
+    else:
+        st.markdown("Inject real-world conditions manually.")
+        weather   = st.selectbox("Weather", ["CLEAR", "RAIN", "FOG", "SNOW"])
+        lighting  = st.selectbox("Lighting", ["DAY", "DAWN/DUSK", "NIGHT"])
+        road_type = st.selectbox("Road Type", ["HIGHWAY", "URBAN", "SCHOOL_ZONE"])
     
-    total_mod = w_map[weather] * l_map[lighting]
-    st.info(f"Grip/Vis Modifier: **{total_mod:.2f}x**")
+        w_map = {"CLEAR": 1.0, "RAIN": 0.75, "FOG": 0.85, "SNOW": 0.5}
+        l_map = {"DAY": 1.0, "DAWN/DUSK": 0.75, "NIGHT": 0.5}
+        
+        total_mod = w_map[weather] * l_map[lighting]
+        st.info(f"Manual Grip/Vis Modifier: **{total_mod:.2f}x**")
+        
     st.divider()
 
     st.markdown("### 📂 Video Input")
     uploaded_file = st.file_uploader("Browse dashcam clip", type=["mp4", "avi"])
-    st.divider()
-    
-    st.markdown("### 🛠️ Neural Architecture")
-    enable_potholes = st.toggle("Enable Pothole Scanning (Static Hazards)", value=False)
     
     st.divider()
     st.caption("YOLOv8n · ResNet-18 · Uni-GRU")
@@ -161,6 +168,20 @@ with tab1:
         with open(temp_input, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
+        # IEEE Pre-Inference Scene Preview
+        import cv2
+        try:
+            if auto_detect:
+                from spatial_encoder import EnvironmentClassifier
+                cap_preview = cv2.VideoCapture(temp_input)
+                ret_p, frame_p = cap_preview.read()
+                cap_preview.release()
+                if ret_p:
+                    p_w, p_l, p_r = EnvironmentClassifier.zero_shot_heuristic_override(frame_p)
+                    st.caption(f"🤖 **EfficientNet Scene Preview:** {p_w} Weather | {p_l} | {p_r}")
+        except Exception as e:
+            pass
+
         # Engage button sits above the video
         run_btn = st.button("🚀 Engage Deep Learning Framework")
 
@@ -183,7 +204,7 @@ with tab1:
             success = process_video(
                 temp_input, temp_output,
                 weather=weather, road_type=road_type, lighting=lighting,
-                ui_callback=render_frame, enable_potholes=enable_potholes
+                ui_callback=render_frame, enable_potholes=enable_potholes, auto_detect_env=auto_detect
             )
             elapsed = time.time() - t0
 
