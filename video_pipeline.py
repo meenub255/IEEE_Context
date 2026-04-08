@@ -141,15 +141,15 @@ def _draw_advanced_hud(frame, weather, road_type, f_mod, w_pred=None, r_pred=Non
 def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc):
     """Draws sleek UI bounding boxes representing neural risk predictions."""
     h, w = frame.shape[:2]
-    b_scale = max(0.35, h / 720.0)  # Dynamic Resolution Auto-Scaling
     
     x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+    box_w = max(x2 - x1, 1)
     
     # Color mapping based on GRU Hazard Prob
     if hazard_prob > 0.75:
         color = (0, 0, 255)       # Red - High Risk
         status = "CRITICAL"
-        thick = 3
+        thick = 2
     elif hazard_prob > 0.40:
         color = (0, 165, 255)     # Orange - Warning
         status = "WARNING"
@@ -157,51 +157,64 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc):
     else:
         color = (0, 255, 100)     # Green - Safe
         status = "SAFE"
-        thick = 2
+        thick = 1
 
-    # Larger bracket corners for visibility at distance
-    L = int(28 * b_scale)
-    cv2.line(frame, (x1, y1), (x1+L, y1), color, thick+1)
-    cv2.line(frame, (x1, y1), (x1, y1+L), color, thick+1)
-    cv2.line(frame, (x2, y2), (x2-L, y2), color, thick+1)
-    cv2.line(frame, (x2, y2), (x2, y2-L), color, thick+1)
-    cv2.line(frame, (x2, y1), (x2-L, y1), color, thick+1)
-    cv2.line(frame, (x2, y1), (x2, y1+L), color, thick+1)
-    cv2.line(frame, (x1, y2), (x1+L, y2), color, thick+1)
-    cv2.line(frame, (x1, y2), (x1, y2-L), color, thick+1)
-
-    # ── Two-line data tag ──
-    font       = cv2.FONT_HERSHEY_DUPLEX
-    font_scale = 0.65 * b_scale
-    font_thick = max(1, int(2 * b_scale))
-
-    line1 = status                                    # e.g. SAFE / WARNING / CRITICAL
-    line2 = f"RISK: {hazard_prob*100:.0f}%  TTC: {ttc:.1f}s"
-
-    (w1, h1), _ = cv2.getTextSize(line1, font, font_scale, font_thick)
-    (w2, h2), _ = cv2.getTextSize(line2, font, font_scale, font_thick)
-
-    pad_h = int(12 * b_scale)
-    pad_w = int(8 * b_scale)
+    # Base scale on screen resolution
+    res_scale = max(0.4, h / 720.0)
     
-    tag_w   = max(w1, w2) + (pad_w * 2)
-    tag_h   = h1 + h2 + pad_h       # padding between lines + top/bottom
-    tag_x1  = x1
-    tag_y1  = max(y1 - tag_h - 4, 0)
-    tag_x2  = tag_x1 + tag_w
-    tag_y2  = max(tag_y1 + tag_h, y1)
+    # Scale text dynamically based on the width of the vehicle!
+    # Distant vehicles get smaller text, preventing massive label overlap
+    box_scale = max(0.4, min(1.1, box_w / 130.0))
+    b_scale = res_scale * box_scale
 
-    # Solid filled background
-    cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), color, -1)
+    # Bracket corners
+    L = int(24 * b_scale)
+    cv2.line(frame, (x1, y1), (x1+L, y1), color, thick)
+    cv2.line(frame, (x1, y1), (x1, y1+L), color, thick)
+    cv2.line(frame, (x2, y2), (x2-L, y2), color, thick)
+    cv2.line(frame, (x2, y2), (x2, y2-L), color, thick)
+    cv2.line(frame, (x2, y1), (x2-L, y1), color, thick)
+    cv2.line(frame, (x2, y1), (x2, y1+L), color, thick)
+    cv2.line(frame, (x1, y2), (x1+L, y2), color, thick)
+    cv2.line(frame, (x1, y2), (x1, y2-L), color, thick)
 
-    # Line 1 — Status label  (black text on coloured bg)
-    y_line1 = tag_y1 + h1 + int(pad_h * 0.3)
-    cv2.putText(frame, line1, (tag_x1 + pad_w, y_line1),
-                font, font_scale, (0, 0, 0), font_thick + 1)
+    # ── Single-Line Data Tag ──
+    # Using a highly compact format to save horizontal space and prevent overlap
+    text = f"{status} [{int(hazard_prob*100)}%] TTC:{ttc:.1f}s"
+    
+    font       = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45 * b_scale
+    font_thick = max(1, int(1.5 * b_scale))
 
-    # Line 2 — Risk + TTC (dark text for legibility)
-    cv2.putText(frame, line2, (tag_x1 + pad_w, y_line1 + h2 + int(pad_h * 0.5)),
-                font, font_scale, (20, 20, 20), font_thick)
+    (txt_w, txt_h), _ = cv2.getTextSize(text, font, font_scale, font_thick)
+
+    pad_h = int(6 * b_scale)
+    pad_w = int(6 * b_scale)
+    
+    tag_x1 = x1
+    tag_y1 = max(y1 - txt_h - (pad_h * 2), 0)
+    tag_x2 = tag_x1 + txt_w + (pad_w * 2)
+    tag_y2 = y1
+
+    # Bounds check to prevent numpy slicing errors at frame edges
+    tag_x1 = max(0, min(tag_x1, w-1))
+    tag_x2 = max(0, min(tag_x2, w))
+    tag_y1 = max(0, min(tag_y1, h-1))
+    tag_y2 = max(0, min(tag_y2, h))
+
+    if tag_x2 > tag_x1 and tag_y2 > tag_y1:
+        import numpy as np
+        # Glassmorphism transparent tag background (prevents blocking distant cars)
+        roi = frame[tag_y1:tag_y2, tag_x1:tag_x2]
+        rect_bg = np.full_like(roi, color)
+        
+        # 60% opacity for the background, 40% opacity for the original video
+        cv2.addWeighted(rect_bg, 0.60, roi, 0.40, 0, roi)
+
+        # Text color: High contrast
+        text_color = (255, 255, 255) if status == "CRITICAL" else (0, 0, 0)
+        cv2.putText(frame, text, (tag_x1 + pad_w, tag_y2 - pad_h + 1),
+                    font, font_scale, text_color, font_thick)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CORE PROCESSING 
