@@ -113,7 +113,7 @@ def _process_frame_cnn(frame, cnn_model):
 # ─────────────────────────────────────────────────────────────────────────────
 # HUD DRAWING (UI OVERHAUL)
 # ─────────────────────────────────────────────────────────────────────────────
-def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=False, active_objs=0, w_pred=None, r_pred=None):
+def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=False, max_risk=0.0, active_objs=0, w_pred=None, r_pred=None):
     """Draws a premium Glassmorphism-style UI overlay indicating Context Awareness."""
     import time
     overlay = frame.copy()
@@ -158,6 +158,23 @@ def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=F
     cv2.putText(frame, f"[SYS] YOLOv8  +  ResNet-18  +  Uni-GRU Hybrid Pipeline", (18, line1_y), font_s, c_font, (160, 160, 160), 1)
     cv2.putText(frame, f"[TRK] Tracked Objects: {active_objs}   |   [LIGHT] {lighting}", (18, line2_y), font_s, c_font, (100, 220, 100), 1)
 
+    # ── HAZARD INTENSITY KPI ────────────────────────────────────────────────
+    kpi_x = int(w * 0.42)
+    kpi_w = int(w * 0.22)
+    kpi_h = int(10 * b_scale)
+    bar_y = line1_y - int(12 * b_scale)
+    
+    cv2.putText(frame, f"HAZARD INTENSITY", (kpi_x, line1_y), font_s, c_font * 0.8, (200, 200, 200), 1)
+    
+    # Background bar
+    cv2.rectangle(frame, (kpi_x, line2_y - kpi_h), (kpi_x + kpi_w, line2_y), (40, 40, 40), -1)
+    # Fill bar (Green -> Red)
+    fill_w = int(kpi_w * max_risk)
+    b_color = (0, 255 - int(255*max_risk), int(255*max_risk))
+    cv2.rectangle(frame, (kpi_x, line2_y - kpi_h), (kpi_x + fill_w, line2_y), b_color, -1)
+    # Percentage text
+    cv2.putText(frame, f"{max_risk*100:.1f}%", (kpi_x + kpi_w + 10, line2_y), font, c_font, b_color, 1)
+
     # Right column — system state badge
     state_txt = "!! AEB ENGAGED" if is_critical else "NOMINAL"
     s_color   = (60, 60, 255) if is_critical else (0, 200, 160)
@@ -194,7 +211,7 @@ def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=F
     pass
 
 
-def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None, drawn_tags=None):
+def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None, rel_speed=0.0, drawn_tags=None):
     """Draws Tesla-style FCW bounding boxes with TTC and distance annotation."""
     h, w = frame.shape[:2]
     
@@ -230,7 +247,8 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None, drawn_t
 
     # ── LABEL TAG ─────────────────────────────────────────────────────────
     dist_str   = f" {dist:.0f}m" if dist is not None else ""
-    text       = f" {status}  TTC:{ttc:.1f}s{dist_str} "
+    speed_kmh  = int(rel_speed * 3.6) # Convert m/s to km/h
+    text       = f" {status}  TTC:{ttc:.1f}s{dist_str}  {speed_kmh}km/h "
 
     font       = cv2.FONT_HERSHEY_SIMPLEX
     # Fixed minimum scale so even small/distant objects are fully legible
@@ -288,7 +306,7 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
     # ── IEEE Zero-Shot Environment Auto-Detect ──
     if auto_detect_env:
         log.info("Engaging EfficientNet Context Evaluator on First Frame...")
-        from spatial_encoder import EnvironmentClassifier
+        from environment_classifier import EnvironmentClassifier
         ret, first_frame = cap.read()
         if ret:
             # Override manual parameters using EfficientNet simulated heuristic
@@ -347,6 +365,10 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
     telemetry_log = [] # [Frame, Timestamp, Max_Risk, Min_TTC]
     
     written = 0
+    # --- TEMPORAL CONSISTENCY BUFFER ---
+    # To prevent phantom braking, AEB only engages if hazard > 85% for 3+ consecutive frames.
+    hazard_consistency_buffer = deque(maxlen=3)
+    
     t0 = time.time()
     
     # ── CRITICAL LATCH ────────────────────────────────────────────────────────
@@ -490,7 +512,7 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                         'centroids': deque(maxlen=SEQ_LEN),
                         'telemetry': deque(maxlen=SEQ_LEN), # [dist, rel_speed, fmod]
                         'last_seen': 0,
-                        'ema_speed': 0.0
+                        'speed_buffer': deque(maxlen=3)      # 3-frame median suppression
                     }
                 
                 current_frame_ids.append(trk_id)
@@ -507,7 +529,6 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     dist = (0.8 * prev_dist) + (0.2 * dist) 
                     
                     # MACRO VELOCITY: Compare current distance to distance ~15 frames ago (0.5s)
-                    # This completely destroys YOLO bounding box frame-to-frame wobble amplification.
                     history_len = len(track['telemetry'])
                     if history_len > 5:
                         old_dist = track['telemetry'][0][0] # Oldest distance in the buffer
@@ -517,10 +538,11 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                         macro_speed = (prev_dist - dist) * fps
                     
                     macro_speed = min(max(macro_speed, 0.0), 30.0) # Cap at physical max closing speed
-                    
-                    # Final gentle smoothing on the calculated speed
-                    track['ema_speed'] = (0.85 * track['ema_speed']) + (0.15 * macro_speed)
-                    rel_speed = track['ema_speed']
+
+                    # 3-FRAME MEDIAN SPEED FILTER (IEEE Hardening Phase)
+                    # This completely ignores bounding box frame-to-frame wobble amplification.
+                    track['speed_buffer'].append(macro_speed)
+                    rel_speed = float(np.median(track['speed_buffer'])) if len(track['speed_buffer']) >= 3 else macro_speed
 
                 track['telemetry'].append([dist, rel_speed, f_mod])
                 
@@ -592,7 +614,7 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     ttc = min(ttc, dist / max(rel_speed, 5.0))
 
                 # Draw the hazard box with distance annotation
-                _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist, drawn_ui_tags)
+                _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist, rel_speed, drawn_ui_tags)
                 
                 # Append to frame metrics
                 frame_max_risk = max(frame_max_risk, hazard_prob)
@@ -633,9 +655,12 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     cv2.putText(frame, "STATIC HAZARD: POTHOLE", (int(px1), max(15, int(py1)-5)),
                                 cv2.FONT_HERSHEY_SIMPLEX, f_scale * 0.7, (0, 120, 255), t_thick)
 
-            # ── CRITICAL LATCH + POST-IMPACT FLASH DETECTOR ──────────────────
-            # 1. If current frame is CRITICAL, reset the latch timer
-            if frame_max_risk >= 0.85:
+            # ── IEEE HARDENING: AEB CONSISTENCY LATCH ──────────────────────────
+            # To prevent phantom braking, AEB only engages if hazard > 85% for 3+ consecutive frames.
+            hazard_consistency_buffer.append(frame_max_risk)
+            
+            # 1. If the last 3 frames all reported high risk, reset/engage the latch
+            if len(hazard_consistency_buffer) >= 3 and all(r >= 0.85 for r in hazard_consistency_buffer):
                 crit_latch_counter = CRIT_LATCH_FRAMES
             
             # 2. Post-Impact Flash: if the frame is suddenly overexposed (mean luma > 200)
@@ -647,12 +672,16 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                 frame_max_risk = max(frame_max_risk, 0.90)  # force CRITICAL during flash
             
             # 3. Tick down the latch counter each frame
-            is_crit = (frame_max_risk >= 0.85) or (crit_latch_counter > 0)
+            # The system is in a "True Critical" state if either:
+            # - The 3-frame buffer is currently saturated (Hazard > 85% for all)
+            # - OR we are currently in the 5-second latch period.
+            is_crit = (len(hazard_consistency_buffer) >= 3 and all(r >= 0.85 for r in hazard_consistency_buffer)) or (crit_latch_counter > 0)
+            
             if crit_latch_counter > 0:
                 crit_latch_counter -= 1
 
             # Finalize Draw
-            _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=is_crit, active_objs=len(current_frame_ids))
+            _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=is_crit, max_risk=frame_max_risk, active_objs=len(current_frame_ids))
             writer.write(frame)
             written += 1
             
