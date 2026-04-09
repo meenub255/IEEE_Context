@@ -110,6 +110,34 @@ st.markdown("""
         padding-bottom: 1rem !important;
         max-width: 100% !important;
     }
+
+    /* ── Kill all white backgrounds ─────────────────────────────────────── */
+    div[data-testid="stVerticalBlock"],
+    div[data-testid="stHorizontalBlock"],
+    div[data-testid="stTabContent"],
+    div[data-testid="stEmpty"],
+    div[class*="uploadedFile"] {
+        background-color: transparent !important;
+    }
+
+    /* File uploader dropzone */
+    section[data-testid="stFileUploadDropzone"] {
+        background-color: #161b22 !important;
+        border: 1px dashed #30363d !important;
+        border-radius: 8px !important;
+    }
+
+    /* Generic element containers */
+    .element-container, .stMarkdown {
+        background: transparent !important;
+    }
+
+    /* Video container — black behind the player, no white flash */
+    div[data-testid="stVideo"] > div,
+    div[data-testid="stVideo"] iframe {
+        background: #000 !important;
+        border-radius: 10px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 

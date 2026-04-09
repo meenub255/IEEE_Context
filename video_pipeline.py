@@ -113,42 +113,91 @@ def _process_frame_cnn(frame, cnn_model):
 # ─────────────────────────────────────────────────────────────────────────────
 # HUD DRAWING (UI OVERHAUL)
 # ─────────────────────────────────────────────────────────────────────────────
-def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, w_pred=None, r_pred=None):
+def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=False, active_objs=0, w_pred=None, r_pred=None):
     """Draws a premium Glassmorphism-style UI overlay indicating Context Awareness."""
+    import time
     overlay = frame.copy()
     h, w = frame.shape[:2]
     b_scale = max(0.35, h / 720.0)
+    font      = cv2.FONT_HERSHEY_DUPLEX
+    font_s    = cv2.FONT_HERSHEY_SIMPLEX
     
-    # Top Bar Dark gradient dynamically sized
-    bar_h = int(60 * b_scale)
-    cv2.rectangle(overlay, (0, 0), (w, bar_h), (15, 15, 15), -1)
-    cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
-    
-    # Dynamic text parameters
-    font_scale = 0.6 * b_scale
-    y_pos = int(35 * b_scale)
-    
-    # Left Context Data
-    txt_l = f"IEEE PROTOTYPE | {weather} ENVIRONMENT"
-    cv2.putText(frame, txt_l, (20, y_pos), cv2.FONT_HERSHEY_DUPLEX, font_scale, (200, 255, 255), max(1, int(b_scale)))
-    
-    # Right Neural Network Diagnostics
-    if lighting == 'NIGHT':
-        txt_r = f"FRICTION: {f_mod:.2f}x | NV: GLARE-SUPPRESSION ACTIVE"
-    else:
-        txt_r = f"FRICTION: {f_mod:.2f}x | SPATIAL-TEMPORAL ACTIVE"
-    text_size = cv2.getTextSize(txt_r, cv2.FONT_HERSHEY_DUPLEX, font_scale, 1)[0]
-    cv2.putText(frame, txt_r, (w - text_size[0] - 20, y_pos), cv2.FONT_HERSHEY_DUPLEX, font_scale, (0, 255, 0), max(1, int(b_scale)))
-    
-    # Straight-View ROI Corridor Guide Lines
-    # Draw two vertical dashed lines at 20% and 80% width — the monitored lane boundary
+    # ── TOP BAR ─────────────────────────────────────────────────────────────
+    bar_h = int(55 * b_scale)
+    cv2.rectangle(overlay, (0, 0), (w, bar_h), (10, 10, 10), -1)
+    cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
+
+    font_scale = 0.55 * b_scale
+    y_pos = int(34 * b_scale)
+
+    # Left — context label
+    txt_l = f"IEEE PROTOTYPE  |  {weather} ENVIRONMENT  |  {road_type}"
+    cv2.putText(frame, txt_l, (18, y_pos), font, font_scale, (180, 230, 255), max(1, int(b_scale)))
+
+    # Right — system pipeline status
+    txt_r = "NV: GLARE-SUPPRESS ACTIVE" if lighting == 'NIGHT' else "SPATIAL-TEMPORAL ACTIVE"
+    txt_r = f"FRICTION: {f_mod:.2f}x  |  {txt_r}"
+    ts = cv2.getTextSize(txt_r, font, font_scale, 1)[0]
+    cv2.putText(frame, txt_r, (w - ts[0] - 18, y_pos), font, font_scale, (80, 220, 80), max(1, int(b_scale)))
+
+    # Thin separator line under top bar
+    cv2.line(frame, (0, bar_h), (w, bar_h), (40, 40, 40), 1)
+
+    # ── BOTTOM TELEMETRY PANEL ───────────────────────────────────────────────
+    panel_h   = int(72 * b_scale)
+    panel_y   = h - panel_h
+    cv2.rectangle(overlay, (0, panel_y), (w, h), (8, 8, 8), -1)
+    cv2.addWeighted(overlay, 0.80, frame, 0.20, 0, frame)
+    cv2.line(frame, (0, panel_y), (w, panel_y), (40, 40, 40), 1)
+
+    c_font = 0.48 * b_scale
+    line1_y = panel_y + int(26 * b_scale)
+    line2_y = panel_y + int(52 * b_scale)
+
+    # Left column
+    cv2.putText(frame, f"[SYS] YOLOv8  +  ResNet-18  +  Uni-GRU Hybrid Pipeline", (18, line1_y), font_s, c_font, (160, 160, 160), 1)
+    cv2.putText(frame, f"[TRK] Tracked Objects: {active_objs}   |   [LIGHT] {lighting}", (18, line2_y), font_s, c_font, (100, 220, 100), 1)
+
+    # Right column — system state badge
+    state_txt = "!! AEB ENGAGED" if is_critical else "NOMINAL"
+    s_color   = (60, 60, 255) if is_critical else (0, 200, 160)
+    st_size   = cv2.getTextSize(state_txt, font, c_font * 1.1, 2)[0]
+    st_x      = w - st_size[0] - 20
+    cv2.putText(frame, f"[ACT] {state_txt}", (st_x - 50, line1_y), font, c_font * 1.1, s_color, max(1, int(b_scale) + 1))
+
+    # ── CRITICAL AEB ALERT BANNER (centered, above panel) ───────────────────
+    if is_critical:
+        pulse  = (np.sin(time.time() * 8) + 1) / 2   # 0..1 smooth pulse
+        banner_h = int(40 * b_scale)
+        banner_y = panel_y - banner_h - int(6 * b_scale)
+
+        # Solid dark banner bg
+        cv2.rectangle(overlay, (0, banner_y), (w, banner_y + banner_h), (30, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
+
+        # Pulsing colored top & bottom accent border on the banner
+        accent_val = int(180 + 75 * pulse)
+        cv2.line(frame, (0, banner_y),              (w, banner_y),              (0, 0, accent_val), 2)
+        cv2.line(frame, (0, banner_y + banner_h),   (w, banner_y + banner_h),   (0, 0, accent_val), 2)
+
+        alert_txt = "[ AEB ]  AUTONOMOUS EMERGENCY BRAKING  -  CRITICAL COLLISION RISK"
+        a_fs      = 0.58 * b_scale
+        a_size    = cv2.getTextSize(alert_txt, font, a_fs, 2)[0]
+        a_x       = (w - a_size[0]) // 2
+        a_y       = banner_y + int(27 * b_scale)
+
+        # Pulsing text color from white to red
+        text_r    = int(200 + 55 * pulse)
+        cv2.putText(frame, alert_txt, (a_x, a_y), font, a_fs, (50, 50, text_r), 2)
+
+    # ── LANE CORRIDOR GUIDE LINES ────────────────────────────────────────────
     roi_left  = int(w * 0.20)
     roi_right = int(w * 0.80)
-    dash_color = (80, 80, 80)   # Subtle dark grey, barely visible
-    dash_len, gap_len = 20, 15
+    dash_color = (55, 55, 55)
+    dash_len, gap_len = 18, 14
     y_cur = bar_h
-    while y_cur < h:
-        y_end = min(y_cur + dash_len, h)
+    while y_cur < h - panel_h:
+        y_end = min(y_cur + dash_len, h - panel_h)
         cv2.line(frame, (roi_left,  y_cur), (roi_left,  y_end), dash_color, 1)
         cv2.line(frame, (roi_right, y_cur), (roi_right, y_end), dash_color, 1)
         y_cur += dash_len + gap_len
@@ -161,27 +210,24 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None, drawn_t
     x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
     box_w = max(x2 - x1, 1)
     
+    # Resolution-adaptive scale (min enforced so tiny/distant boxes stay readable)
+    res_scale = max(0.55, h / 720.0)
+
     # Tesla FCW Color Zones
     if hazard_prob > 0.75:
-        color = (0, 0, 255)       # Red  — AEB / CRITICAL zone
+        color = (0, 0, 200)       # Red  — AEB / CRITICAL zone
         status = "CRITICAL"
-        thick = 2
     elif hazard_prob > 0.40:
-        color = (0, 165, 255)     # Orange — FCW WARNING zone
+        color = (0, 140, 255)     # Orange — FCW WARNING zone
         status = "WARNING"
-        thick = 2
     else:
-        color = (0, 220, 80)      # Green — SAFE following distance
+        color = (0, 200, 60)      # Green — SAFE following distance
         status = "SAFE"
-        thick = 1
 
-    # Adaptive scale: distant vehicles get smaller labels
-    res_scale = max(0.4, h / 720.0)
-    box_scale = max(0.4, min(1.1, box_w / 130.0))
-    b_scale = res_scale * box_scale
+    thick = max(1, int(1.5 * res_scale))
 
-    # Bracket corners
-    L = int(24 * b_scale)
+    # Bracket corner marks
+    L = int(14 * res_scale)
     cv2.line(frame, (x1, y1), (x1+L, y1), color, thick)
     cv2.line(frame, (x1, y1), (x1, y1+L), color, thick)
     cv2.line(frame, (x2, y2), (x2-L, y2), color, thick)
@@ -191,51 +237,50 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None, drawn_t
     cv2.line(frame, (x1, y2), (x1+L, y2), color, thick)
     cv2.line(frame, (x1, y2), (x1, y2-L), color, thick)
 
-    # Tesla-style label: STATUS | TTC | Distance
-    dist_str = f" | {dist:.0f}m" if dist is not None else ""
-    text = f"{status}  TTC:{ttc:.1f}s{dist_str}"
-    
+    # ── LABEL TAG ─────────────────────────────────────────────────────────
+    dist_str   = f" {dist:.0f}m" if dist is not None else ""
+    text       = f" {status}  TTC:{ttc:.1f}s{dist_str} "
+
     font       = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.42 * b_scale
-    font_thick = max(1, int(1.5 * b_scale))
+    # Fixed minimum scale so even small/distant objects are fully legible
+    font_scale = max(0.42, 0.52 * res_scale)
+    font_thick = max(1, int(1.4 * res_scale))
 
-    (txt_w, txt_h), _ = cv2.getTextSize(text, font, font_scale, font_thick)
-    pad_h = int(6 * b_scale)
-    pad_w = int(6 * b_scale)
-    
-    tag_x1 = x1
-    tag_y1 = max(y1 - txt_h - (pad_h * 2), 0)
-    tag_x2 = min(tag_x1 + txt_w + (pad_w * 2), w)
-    tag_y2 = y1
+    (txt_w, txt_h), baseline = cv2.getTextSize(text, font, font_scale, font_thick)
+    pad = max(4, int(5 * res_scale))
 
-    tag_x1 = max(0, tag_x1)
-    tag_y1 = max(0, tag_y1)
-    tag_y2 = max(tag_y1 + 1, tag_y2)
+    tag_h  = txt_h + baseline + pad * 2
+    tag_x1 = max(0, x1)
+    tag_y2 = max(tag_h, y1)          # hangs just above the bracket top
+    tag_y1 = tag_y2 - tag_h
+    tag_x2 = min(w, tag_x1 + txt_w)
 
-    # Resolve UI Text Overlap by shifting tag up if it hits another tag
+    # Ensure tag is within frame vertically
+    if tag_y1 < 0:
+        tag_y1 = y2 + 2              # flip below the box if no space above
+        tag_y2 = tag_y1 + tag_h
+
+    # Resolve overlap
     if drawn_tags is not None:
         for _ in range(5):
-            conflict = False
-            for (dx1, dy1, dx2, dy2) in drawn_tags:
-                if not (tag_x2 < dx1 or tag_x1 > dx2 or tag_y2 < dy1 or tag_y1 > dy2):
-                    conflict = True
-                    break
+            conflict = any(
+                not (tag_x2 < dx1 or tag_x1 > dx2 or tag_y2 < dy1 or tag_y1 > dy2)
+                for (dx1, dy1, dx2, dy2) in drawn_tags
+            )
             if conflict:
-                shift = (tag_y2 - tag_y1) + 2
-                tag_y1 = max(0, tag_y1 - shift)
-                tag_y2 = max(1, tag_y2 - shift)
+                tag_y1 = max(0, tag_y1 - tag_h - 2)
+                tag_y2 = tag_y1 + tag_h
             else:
                 break
         drawn_tags.append((tag_x1, tag_y1, tag_x2, tag_y2))
 
     if tag_x2 > tag_x1 and tag_y2 > tag_y1:
-        import numpy as np
-        roi = frame[tag_y1:tag_y2, tag_x1:tag_x2]
-        rect_bg = np.full_like(roi, color)
-        cv2.addWeighted(rect_bg, 0.65, roi, 0.35, 0, roi)
-        text_color = (255, 255, 255) if status == "CRITICAL" else (0, 0, 0)
-        cv2.putText(frame, text, (tag_x1 + pad_w, tag_y2 - pad_h + 1),
-                    font, font_scale, text_color, font_thick)
+        # Solid bold color background — fully opaque, maximum contrast
+        cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), color, -1)
+        # White text for CRITICAL, black for WARNING/SAFE
+        txt_color = (255, 255, 255) if status == "CRITICAL" else (10, 10, 10)
+        cv2.putText(frame, text, (tag_x1, tag_y2 - pad - baseline),
+                    font, font_scale, txt_color, font_thick, cv2.LINE_AA)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CORE PROCESSING 
@@ -312,6 +357,13 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
     
     written = 0
     t0 = time.time()
+    
+    # ── CRITICAL LATCH ────────────────────────────────────────────────────────
+    # Once CRITICAL is triggered, hold the alert for at least 5 seconds.
+    # This prevents the banner from blinking off when YOLO loses the target
+    # during impact flashes or chaotic post-crash frames.
+    CRIT_LATCH_FRAMES  = fps * 5   # 5 seconds hold after last CRITICAL frame
+    crit_latch_counter = 0         # countdown timer (frames remaining)
     
     with torch.no_grad():
         while cap.isOpened():
@@ -423,16 +475,16 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     continue
                 
                 # C: STRAIGHT-VIEW ROI CORRIDOR FILTER
-                # Only monitor the central lane directly ahead (middle 60% of frame width).
-                # Vehicles in the far-left or far-right lanes are not in our immediate path.
+                # Only apply this filter to SMALL/DISTANT objects (fill < 20% of frame).
+                # A box filling >20% of the frame is physically enormous — it is directly alongside
+                # or in front of the ego-vehicle regardless of centroid X position.
+                # Filtering it would be a dangerous false negative (like missing the ambulance case).
                 cx_check = (x1 + x2) / 2
-                roi_left  = width * 0.20   # 20% from left edge
-                roi_right = width * 0.80   # 80% from left edge (i.e. 20% from right)
-                if cx_check < roi_left or cx_check > roi_right:
-                    continue
-                
-                # If a box is massive but sits in the middle of the screen (y1 < 0.5 * height), 
-                # it's a massive vehicle directly in front of us (e.g. total collision). Do NOT suppress it!
+                roi_left  = width * 0.20
+                roi_right = width * 0.80
+                if box_fill_ratio < 0.20:
+                    if cx_check < roi_left or cx_check > roi_right:
+                        continue
                 
                 dist = _pseudo_depth(y2 - y1, height)
                 cx, cy = (x1+x2)/2, (y1+y2)/2
@@ -516,23 +568,30 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     critical_ttc = 1.7
                     warning_ttc  = 3.0
 
-                # Step 3: Distance Zone (absolute physical safety floor)
-                # No matter what TTC says, an object far away is physically secure.
-                if dist > 45.0:
-                    hazard_prob = min(hazard_prob, 0.25)        # Force SAFE (Green)
-                elif dist > 20.0:
-                    hazard_prob = min(hazard_prob, 0.55)        # Force Low WARNING
-                elif dist > 14.0:
-                    hazard_prob = min(hazard_prob, 0.74)        # Capped to High WARNING (Orange), prevents distant red flashes
-                # dist <= 14m: CRITICAL Zone fully unlocked (Red) if closing speed is high
-
-                # Step 4: TTC Override (primary Tesla FCW decision maker)
+                # Step 3 & 4: Unified Autonomous Threat Matrix
+                
+                # Apply Neural Network base / Physics fallback
                 if ttc > warning_ttc:
-                    hazard_prob = min(hazard_prob, 0.39)        # Safe zone — force GREEN
+                    hazard_prob = min(hazard_prob, 0.35)        # TTC marks as Safe
                 elif ttc > critical_ttc:
-                    hazard_prob = min(hazard_prob, 0.74)        # Warning zone — max ORANGE
+                    hazard_prob = max(0.45, min(hazard_prob, 0.74)) # TTC marks as Warning
                 else:
-                    hazard_prob = max(hazard_prob, 0.76)        # Tesla AEB zone — force CRITICAL
+                    hazard_prob = max(hazard_prob, 0.85)        # TTC marks as Critical
+                    
+                # Physical Proximity Overrides (Absolute Reality Checks)
+                if dist < 8.0:
+                    # Imminent collision proximity < 8m -> Force CRITICAL
+                    hazard_prob = max(hazard_prob, 0.85)
+                elif dist < 18.0:
+                    # Tailgating proximity < 18m -> Force at least a WARNING
+                    hazard_prob = max(hazard_prob, 0.55)
+                    
+                if dist > 45.0:
+                    # Extreme distance -> Force SAFE
+                    hazard_prob = min(hazard_prob, 0.25)
+                elif dist > 25.0:
+                    # Safe distance -> Cap at WARNING (no distant red flashes)
+                    hazard_prob = min(hazard_prob, 0.74)
 
                 # Step 5: Anomalous Orientation Detection (Spun-out / Horizontal Cars)
                 # If a car is sideways, full CRITICAL regardless of distance
@@ -583,8 +642,26 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     cv2.putText(frame, "STATIC HAZARD: POTHOLE", (int(px1), max(15, int(py1)-5)),
                                 cv2.FONT_HERSHEY_SIMPLEX, f_scale * 0.7, (0, 120, 255), t_thick)
 
+            # ── CRITICAL LATCH + POST-IMPACT FLASH DETECTOR ──────────────────
+            # 1. If current frame is CRITICAL, reset the latch timer
+            if frame_max_risk >= 0.85:
+                crit_latch_counter = CRIT_LATCH_FRAMES
+            
+            # 2. Post-Impact Flash: if the frame is suddenly overexposed (mean luma > 200)
+            #    and we are still within the latch window, this is an airbag/impact flash.
+            #    Keep CRITICAL locked — do NOT let it fall to NOMINAL.
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            mean_luma  = np.mean(gray_frame)
+            if mean_luma > 200 and crit_latch_counter > 0:
+                frame_max_risk = max(frame_max_risk, 0.90)  # force CRITICAL during flash
+            
+            # 3. Tick down the latch counter each frame
+            is_crit = (frame_max_risk >= 0.85) or (crit_latch_counter > 0)
+            if crit_latch_counter > 0:
+                crit_latch_counter -= 1
+
             # Finalize Draw
-            _draw_advanced_hud(frame, weather, road_type, lighting, f_mod)
+            _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=is_crit, active_objs=len(current_frame_ids))
             writer.write(frame)
             written += 1
             

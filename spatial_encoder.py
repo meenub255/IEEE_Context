@@ -126,9 +126,16 @@ class EnvironmentClassifier(nn.Module):
         edge_ratio = np.sum(abs_x) / (np.sum(abs_y) + 1e-5)
         
         # 5. ADVANCED MODULE C: High-Albedo Specular Analysis for Snow
-        white_pixels = np.sum((v_channel > 200) & (s_channel < 35))
-        total_pixels = cv2_frame.shape[0] * cv2_frame.shape[1]
-        snow_ratio = white_pixels / total_pixels
+        # Snow accumulates on the ground. We aggressively crop the top 50% of the frame 
+        # to prevent bright, low-saturation skies/clouds from triggering false snow positives.
+        h, w = cv2_frame.shape[:2]
+        half_h = h // 2
+        v_bottom = v_channel[half_h:, :]
+        s_bottom = s_channel[half_h:, :]
+        
+        white_pixels = np.sum((v_bottom > 210) & (s_bottom < 30))
+        total_bottom_pixels = half_h * w
+        snow_ratio = white_pixels / total_bottom_pixels
         
         # 6. Autonomous Decision Tree Logic
         if snow_ratio > 0.04:
