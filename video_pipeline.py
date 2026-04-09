@@ -190,17 +190,8 @@ def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=F
         text_r    = int(200 + 55 * pulse)
         cv2.putText(frame, alert_txt, (a_x, a_y), font, a_fs, (50, 50, text_r), 2)
 
-    # ── LANE CORRIDOR GUIDE LINES ────────────────────────────────────────────
-    roi_left  = int(w * 0.20)
-    roi_right = int(w * 0.80)
-    dash_color = (55, 55, 55)
-    dash_len, gap_len = 18, 14
-    y_cur = bar_h
-    while y_cur < h - panel_h:
-        y_end = min(y_cur + dash_len, h - panel_h)
-        cv2.line(frame, (roi_left,  y_cur), (roi_left,  y_end), dash_color, 1)
-        cv2.line(frame, (roi_right, y_cur), (roi_right, y_end), dash_color, 1)
-        y_cur += dash_len + gap_len
+    # ── LANE CORRIDOR REMOVED ────────────────────────────────────────────────
+    pass
 
 
 def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None, drawn_tags=None):
