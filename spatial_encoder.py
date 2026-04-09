@@ -86,35 +86,59 @@ class EnvironmentClassifier(nn.Module):
     @staticmethod
     def zero_shot_heuristic_override(cv2_frame):
         """
-        Calculates mathematical image properties as a stand-in for the untrained EfficientNet weights.
+        Calculates advanced atmospheric scattering and structural physics as a highly robust
+        stand-in for the untrained EfficientNet weights.
         """
         import cv2
         import numpy as np
         
-        # Calculate Lighting based on mean luminance
+        # 1. Calculate Lighting based on precise median and mean luminance
         gray = cv2.cvtColor(cv2_frame, cv2.COLOR_BGR2GRAY)
         mean_lumi = np.mean(gray)
         
-        if mean_lumi < 60:
+        if mean_lumi < 55:
             lighting = 'NIGHT'
-        elif mean_lumi < 100:
+        elif mean_lumi < 95:
             lighting = 'DAWN/DUSK'
         else:
             lighting = 'DAY'
             
-        # Calculate Weather based on saturation and bright white density (snow)
+        # 2. Extract Color Spaces
         hsv = cv2.cvtColor(cv2_frame, cv2.COLOR_BGR2HSV)
         s_channel = hsv[:, :, 1]
         v_channel = hsv[:, :, 2]
-        
         mean_sat = np.mean(s_channel)
-        white_pixels = np.sum((v_channel > 210) & (s_channel < 40))
-        total_pixels = cv2_frame.shape[0] * cv2_frame.shape[1]
         
-        if (white_pixels / total_pixels) > 0.15:
+        # 3. ADVANCED MODULE A: Dark Channel Prior (DCP) for Fog
+        # Real-world atmospheric scattering suppresses pure blacks in daylight.
+        # Compute minimum RGB channel, then mathematically erode it.
+        dark_channel = np.min(cv2_frame, axis=2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+        dark_channel = cv2.erode(dark_channel, kernel)
+        dcp_mean = np.mean(dark_channel)
+        
+        # 4. ADVANCED MODULE B: High-Frequency Sobel Matrix for Rain Streaks
+        # Rain causes distinct vertical edge artifacts and blurs structural horizontals
+        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        abs_x = np.absolute(sobel_x)
+        abs_y = np.absolute(sobel_y)
+        edge_ratio = np.sum(abs_x) / (np.sum(abs_y) + 1e-5)
+        
+        # 5. ADVANCED MODULE C: High-Albedo Specular Analysis for Snow
+        white_pixels = np.sum((v_channel > 200) & (s_channel < 35))
+        total_pixels = cv2_frame.shape[0] * cv2_frame.shape[1]
+        snow_ratio = white_pixels / total_pixels
+        
+        # 6. Autonomous Decision Tree Logic
+        if snow_ratio > 0.04:
             weather = 'SNOW'
-        elif mean_sat < 65 and mean_lumi < 80:
-            weather = 'RAIN' # Dark and desaturated usually implies heavy rain/fog
+        elif dcp_mean > 75 and mean_sat < 85 and lighting != 'NIGHT':
+            # High atmospheric scattering + low color density = FOG
+            weather = 'FOG'
+        elif (edge_ratio > 1.05 and mean_sat < 90) or (mean_sat < 60 and mean_lumi < 100):
+            # High vertical streak-to-horizontal ratio OR extreme monochromatic dampness = RAIN
+            weather = 'RAIN'
         else:
             weather = 'CLEAR'
             

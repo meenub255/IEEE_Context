@@ -113,7 +113,7 @@ def _process_frame_cnn(frame, cnn_model):
 # ─────────────────────────────────────────────────────────────────────────────
 # HUD DRAWING (UI OVERHAUL)
 # ─────────────────────────────────────────────────────────────────────────────
-def _draw_advanced_hud(frame, weather, road_type, f_mod, w_pred=None, r_pred=None):
+def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, w_pred=None, r_pred=None):
     """Draws a premium Glassmorphism-style UI overlay indicating Context Awareness."""
     overlay = frame.copy()
     h, w = frame.shape[:2]
@@ -133,7 +133,10 @@ def _draw_advanced_hud(frame, weather, road_type, f_mod, w_pred=None, r_pred=Non
     cv2.putText(frame, txt_l, (20, y_pos), cv2.FONT_HERSHEY_DUPLEX, font_scale, (200, 255, 255), max(1, int(b_scale)))
     
     # Right Neural Network Diagnostics
-    txt_r = f"FRICTION: {f_mod:.2f}x | SPATIAL-TEMPORAL ACTIVE"
+    if lighting == 'NIGHT':
+        txt_r = f"FRICTION: {f_mod:.2f}x | NV: GLARE-SUPPRESSION ACTIVE"
+    else:
+        txt_r = f"FRICTION: {f_mod:.2f}x | SPATIAL-TEMPORAL ACTIVE"
     text_size = cv2.getTextSize(txt_r, cv2.FONT_HERSHEY_DUPLEX, font_scale, 1)[0]
     cv2.putText(frame, txt_r, (w - text_size[0] - 20, y_pos), cv2.FONT_HERSHEY_DUPLEX, font_scale, (0, 255, 0), max(1, int(b_scale)))
     
@@ -151,7 +154,7 @@ def _draw_advanced_hud(frame, weather, road_type, f_mod, w_pred=None, r_pred=Non
         y_cur += dash_len + gap_len
 
 
-def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None):
+def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None, drawn_tags=None):
     """Draws Tesla-style FCW bounding boxes with TTC and distance annotation."""
     h, w = frame.shape[:2]
     
@@ -208,6 +211,22 @@ def _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist=None):
     tag_x1 = max(0, tag_x1)
     tag_y1 = max(0, tag_y1)
     tag_y2 = max(tag_y1 + 1, tag_y2)
+
+    # Resolve UI Text Overlap by shifting tag up if it hits another tag
+    if drawn_tags is not None:
+        for _ in range(5):
+            conflict = False
+            for (dx1, dy1, dx2, dy2) in drawn_tags:
+                if not (tag_x2 < dx1 or tag_x1 > dx2 or tag_y2 < dy1 or tag_y1 > dy2):
+                    conflict = True
+                    break
+            if conflict:
+                shift = (tag_y2 - tag_y1) + 2
+                tag_y1 = max(0, tag_y1 - shift)
+                tag_y2 = max(1, tag_y2 - shift)
+            else:
+                break
+        drawn_tags.append((tag_x1, tag_y1, tag_x2, tag_y2))
 
     if tag_x2 > tag_x1 and tag_y2 > tag_y1:
         import numpy as np
@@ -299,8 +318,38 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
             ret, frame = cap.read()
             if not ret: break
             
-            # --- CLAHE ENHANCEMENT FOR NIGHT VISIBILITY ---
+            # --- TESLA AUTONOMOUS NIGHT VISION PIPELINE ---
             if lighting == 'NIGHT':
+                # 1. Tesla Auto-Gain Control (Dynamic Gamma)
+                # Calculate absolute median brightness to see if frame is pitch black
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                median_luma = np.median(gray)
+                
+                if median_luma < 50:
+                    # Frame is dangerously dark. Stretch the shadows.
+                    gamma = 0.65
+                    inv_gamma = 1.0 / gamma
+                    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+                    frame = cv2.LUT(frame, table)
+                
+                # 2. Headlight Glare Masking & Suppression
+                # Extract extreme whites (headlight cores)
+                _, glare_mask = cv2.threshold(gray, 235, 255, cv2.THRESH_BINARY)
+                # Expand the mask slightly to cover the halo
+                kernel = np.ones((5,5), np.uint8)
+                glare_mask = cv2.dilate(glare_mask, kernel, iterations=2)
+                
+                # Heavily blur the overexposed regions to destroy false structural geometry
+                glare_blur = cv2.GaussianBlur(frame, (21, 21), 0)
+                
+                # Blend the melted glare back into the frame
+                frame = np.where(glare_mask[:, :, None] == 255, glare_blur, frame).astype(np.uint8)
+                
+                # 3. Bilateral Sensor De-Noising
+                # Smooth out standard ISO camera grain while preserving pedestrian/car outlines
+                frame = cv2.bilateralFilter(frame, 5, 35, 35)
+
+                # 4. Standard CLAHE Contrast Recovery
                 lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
                 l, a, b = cv2.split(lab)
                 clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
@@ -316,12 +365,42 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
             # 2. YOLO TRACKING
             res = yolo(frame, classes=YOLO_CLASSES, verbose=False)[0]
             
-            boxes_to_process = []
+            raw_boxes = []
             for box in res.boxes:
                 if box.conf[0].item() < current_conf_threshold: continue
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                boxes_to_process.append([x1, y1, x2, y2])
+                raw_boxes.append([x1, y1, x2, y2, box.conf[0].item()])
             
+            # --- Class-Agnostic NMS (Non-Maximum Suppression) ---
+            # Suppresses overlapping boxes (e.g. Person on Motorcycle) to prevent double-tracking.
+            boxes_to_process = []
+            raw_boxes.sort(key=lambda x: x[4], reverse=True) # Sort by highest confidence
+            for rb in raw_boxes:
+                x1, y1, x2, y2, _ = rb
+                area = (x2 - x1) * (y2 - y1)
+                overlap = False
+                for fb in boxes_to_process:
+                    fx1, fy1, fx2, fy2 = fb
+                    farea = (fx2 - fx1) * (fy2 - fy1)
+                    
+                    ix1 = max(x1, fx1)
+                    iy1 = max(y1, fy1)
+                    ix2 = min(x2, fx2)
+                    iy2 = min(y2, fy2)
+                    
+                    iarea = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                    iou = iarea / float(area + farea - iarea)
+                    intersection_ratio = iarea / float(min(area, farea) + 1e-5)
+                    
+                    # If heavily overlapping OR completely swallowed by another box
+                    if iou > 0.45 or intersection_ratio > 0.7:
+                        overlap = True
+                        break
+                
+                if not overlap:
+                    boxes_to_process.append([x1, y1, x2, y2])
+            
+            drawn_ui_tags = []
             current_frame_ids = []
             frame_max_risk = 0.0
             frame_min_ttc = 99.9
@@ -329,18 +408,18 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
             for (x1, y1, x2, y2) in boxes_to_process:
                 
                 # IEEE Feature: Ego-Vehicle & Environment Suppression
-                box_area = (x2 - x1) * (y2 - y1)
-                screen_area = width * height
-                box_fill_ratio = box_area / screen_area  # How much of the screen does this object fill?
+                box_w = x2 - x1
+                box_h = y2 - y1
+                box_fill_ratio = (box_w * box_h) / (width * height)
                 
-                # A: Hood / Dashboard cutoff.
-                # ONLY suppress boxes that are ENTIRELY below 80% of frame height AND fill < 15% of screen.
-                # This ensures a close vehicle filling the frame is NEVER deleted.
-                if y1 > height * 0.80 and box_fill_ratio < 0.15:
+                # A: Dashboard / Ego-Hood Override
+                # If a box touches the absolute bottom of the screen, spans more than 70% of the width, 
+                # and starts below the horizon, it is mathematically the inside of the ego-vehicle.
+                if y2 > height * 0.92 and box_w > width * 0.70 and y1 > height * 0.50:
                     continue
                 
-                # B: Dashboard/glare blobs at the very bottom, tiny area only
-                if y1 > height * 0.85 and box_fill_ratio < 0.05:
+                # B: Lower-windshield glare and vent reflections
+                if y1 > height * 0.75 and box_fill_ratio < 0.15:
                     continue
                 
                 # C: STRAIGHT-VIEW ROI CORRIDOR FILTER
@@ -376,19 +455,28 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                 track['last_seen'] = 0 # reset dormant timer
                 track['centroids'].append((cx, cy))
                 
-                # Calculate Telemetry with HEAVY EMA (Exponential Moving Average) smoothing
+                # Calculate Telemetry with MACRO-WINDOW velocity tracking
                 rel_speed = 0.0
                 if len(track['telemetry']) > 0:
                     prev_dist = track['telemetry'][-1][0]
                     
-                    # 90% strict EMA smoothing to entirely kill YOLO pixel jumping
-                    dist = (0.9 * prev_dist) + (0.1 * dist) 
+                    # Strict EMA smoothing for absolute UI distance stability
+                    dist = (0.8 * prev_dist) + (0.2 * dist) 
                     
-                    raw_rel_speed = (prev_dist - dist) * fps
-                    raw_rel_speed = min(max(raw_rel_speed, 0.0), 30.0) # hard cap internal physics
+                    # MACRO VELOCITY: Compare current distance to distance ~15 frames ago (0.5s)
+                    # This completely destroys YOLO bounding box frame-to-frame wobble amplification.
+                    history_len = len(track['telemetry'])
+                    if history_len > 5:
+                        old_dist = track['telemetry'][0][0] # Oldest distance in the buffer
+                        time_delta = history_len / fps      # Approx 0.5 seconds
+                        macro_speed = (old_dist - dist) / time_delta
+                    else:
+                        macro_speed = (prev_dist - dist) * fps
                     
-                    # Smooth the velocity itself so it doesn't spike from 0 to 30 instantly
-                    track['ema_speed'] = (0.8 * track['ema_speed']) + (0.2 * raw_rel_speed)
+                    macro_speed = min(max(macro_speed, 0.0), 30.0) # Cap at physical max closing speed
+                    
+                    # Final gentle smoothing on the calculated speed
+                    track['ema_speed'] = (0.85 * track['ema_speed']) + (0.15 * macro_speed)
                     rel_speed = track['ema_speed']
 
                 track['telemetry'].append([dist, rel_speed, f_mod])
@@ -429,14 +517,14 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     warning_ttc  = 3.0
 
                 # Step 3: Distance Zone (absolute physical safety floor)
-                # No matter what TTC says, a car 50m away is SAFE
-                if dist > 50.0:
-                    hazard_prob = min(hazard_prob, 0.25)        # Force SAFE
-                elif dist > 25.0:
-                    hazard_prob = min(hazard_prob, 0.55)        # Max WARNING
-                elif dist > 12.0:
-                    hazard_prob = min(hazard_prob, 0.80)        # High WARNING / borderline CRITICAL
-                # dist < 12m: CRITICAL fully unlocked (car is right in front)
+                # No matter what TTC says, an object far away is physically secure.
+                if dist > 45.0:
+                    hazard_prob = min(hazard_prob, 0.25)        # Force SAFE (Green)
+                elif dist > 20.0:
+                    hazard_prob = min(hazard_prob, 0.55)        # Force Low WARNING
+                elif dist > 14.0:
+                    hazard_prob = min(hazard_prob, 0.74)        # Capped to High WARNING (Orange), prevents distant red flashes
+                # dist <= 14m: CRITICAL Zone fully unlocked (Red) if closing speed is high
 
                 # Step 4: TTC Override (primary Tesla FCW decision maker)
                 if ttc > warning_ttc:
@@ -454,7 +542,7 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                     ttc = min(ttc, dist / max(rel_speed, 5.0))
 
                 # Draw the hazard box with distance annotation
-                _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist)
+                _draw_hazard_box(frame, x1, y1, x2, y2, hazard_prob, ttc, dist, drawn_ui_tags)
                 
                 # Append to frame metrics
                 frame_max_risk = max(frame_max_risk, hazard_prob)
@@ -496,7 +584,7 @@ def process_video(input_path, output_path, weather='CLEAR', road_type='HIGHWAY',
                                 cv2.FONT_HERSHEY_SIMPLEX, f_scale * 0.7, (0, 120, 255), t_thick)
 
             # Finalize Draw
-            _draw_advanced_hud(frame, weather, road_type, f_mod)
+            _draw_advanced_hud(frame, weather, road_type, lighting, f_mod)
             writer.write(frame)
             written += 1
             
