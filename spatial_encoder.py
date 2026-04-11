@@ -10,8 +10,8 @@ class CNN_Encoder(nn.Module):
     def __init__(self, embed_size=256, num_weather=4, num_road=3):
         super(CNN_Encoder, self).__init__()
         
-        # Load a pre-trained ResNet18 (small, fast on CPU)
-        model = resnet18(weights=ResNet18_Weights.DEFAULT)
+        # Load a base ResNet18 (initialized with random weights for offline usage)
+        model = resnet18(weights=None)
         num_ftrs = model.fc.in_features
         
         # Remove the final fully-connected (ImageNet classification) layer

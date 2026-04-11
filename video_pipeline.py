@@ -131,7 +131,7 @@ def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=F
     y_pos = int(34 * b_scale)
 
     # Left — context label
-    txt_l = f"IEEE PROTOTYPE  |  {weather} ENVIRONMENT  |  {road_type}"
+    txt_l = f"IEEE PROTOTYPE | THE MAD SCIENTISTS | {weather} ENVIRONMENT"
     cv2.putText(frame, txt_l, (18, y_pos), font, font_scale, (180, 230, 255), max(1, int(b_scale)))
 
     # Right — system pipeline status
@@ -155,7 +155,7 @@ def _draw_advanced_hud(frame, weather, road_type, lighting, f_mod, is_critical=F
     line2_y = panel_y + int(52 * b_scale)
 
     # Left column
-    cv2.putText(frame, f"[SYS] YOLOv8  +  ResNet-18  +  Uni-GRU Hybrid Pipeline", (18, line1_y), font_s, c_font, (160, 160, 160), 1)
+    cv2.putText(frame, f"[SYS] THE MAD SCIENTISTS | YOLOv8 + ResNet-18 + Uni-GRU", (18, line1_y), font_s, c_font, (160, 160, 160), 1)
     cv2.putText(frame, f"[TRK] Tracked Objects: {active_objs}   |   [LIGHT] {lighting}", (18, line2_y), font_s, c_font, (100, 220, 100), 1)
 
     # ── HAZARD INTENSITY KPI ────────────────────────────────────────────────

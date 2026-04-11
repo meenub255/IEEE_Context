@@ -15,7 +15,8 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;500&display=swap');
+    /* @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;500&display=swap'); */
+    /* Fonts disabled for Offline Support. Using system fallback stack. */
 
     /* ── LIGHT THEME (ACADEMIC STYLE) ────────────────────────────────────── */
     :root {
@@ -34,7 +35,7 @@ st.markdown("""
     .stApp {
         background-color: var(--bg-deep);
         color: var(--text-main);
-        font-family: 'Outfit', sans-serif;
+        font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
 
     /* ── TITLES & HEADERS ────────────────────────────────────────────────── */
@@ -197,7 +198,15 @@ st.markdown("""
 
     /* Kill default blocks */
     #MainMenu, footer, header { visibility: hidden; }
-    .block-container { padding: 1.5rem 5rem !important; }
+    .block-container { padding: 1.5rem 3rem !important; }
+
+    /* ── MOBILE RESPONSIVE OVERRIDES ────────────────────────────────────── */
+    @media (max-width: 768px) {
+        .block-container { padding: 1rem 1rem !important; }
+        h1 { font-size: 1.5rem !important; }
+        .stButton > button { padding: 0.6rem 1rem !important; font-size: 0.8rem !important; }
+        div[data-baseweb="tab"] { padding: 8px 12px !important; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -236,13 +245,14 @@ with st.sidebar:
         st.info(f"Manual Grip/Vis Modifier: **{total_mod:.2f}x**")
         
     st.divider()
-    st.caption("YOLOv8n · ResNet-18 · Uni-GRU")
+    st.caption("YOLOv8n · ResNet-18 · Uni-GRU | Team: The Mad Scientists")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN AREA
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("<h1>🛡️ Context-Aware Road Hazard Prediction System</h1>", unsafe_allow_html=True)
+st.markdown("<p style='margin-top: -20px; color: var(--accent-blue); opacity: 0.8; font-weight: 500; font-size: 1.1rem; letter-spacing: 0.05em;'>RESEARCH & DEVELOPMENT BY <b>THE MAD SCIENTISTS</b></p>", unsafe_allow_html=True)
 st.divider()
 
 if uploaded_file is not None:
